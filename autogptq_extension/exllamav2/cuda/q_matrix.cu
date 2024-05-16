@@ -19,8 +19,8 @@
 __global__ void shuffle_kernel
 (
     uint32_t* __restrict__ b_q_weight,
-    const int size_k,
-    const int size_n,
+    const int size_k, // 4096
+    const int size_n, // 4096
     const int rows_8,
     const int rows_6,
     const int rows_5,
@@ -36,7 +36,18 @@ __global__ void shuffle_kernel
     while (k < rows_8) { shuffle_8bit_4 (b_ptr, size_n); b_ptr += 1 * size_n; k +=  4; }
     while (k < rows_6) { shuffle_6bit_16(b_ptr, size_n); b_ptr += 3 * size_n; k += 16; }
     while (k < rows_5) { shuffle_5bit_32(b_ptr, size_n); b_ptr += 5 * size_n; k += 32; }
-    while (k < rows_4) { shuffle_4bit_8 (b_ptr, size_n); b_ptr += 1 * size_n; k +=  8; }
+
+    while (k < rows_4) { 
+	    uint32_t before = b_ptr[0];
+	    shuffle_4bit_8 (b_ptr, size_n); 
+	    uint32_t after = b_ptr[0];
+	    /* 
+	    if(threadIdx.x == 0 && blockIdx.x % 8 == 0 && k + 8 >= rows_4) {
+		printf("before\t%x\nafter\t%x\n", before, after);
+	    }
+	    */
+	    b_ptr += 1 * size_n; k +=  8; 
+    }
     while (k < rows_3) { shuffle_3bit_32(b_ptr, size_n); b_ptr += 3 * size_n; k += 32; }
     while (k < rows_2) { shuffle_2bit_16(b_ptr, size_n); b_ptr += 1 * size_n; k += 16; }
 }
@@ -146,6 +157,9 @@ QMatrix::QMatrix
     gridDim.x = DIVIDE(width, THREADS_X);
     gridDim.y = 1;
 
+    printf("before shift kernel, %d %d %d, %d %d %d\n", gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z);
+
+    printf("height, width, %d %d, rows_8 %d, rows_6 %d, rows_5 %d, rows_4 %d, rows_3 %d, rows_2 %d\n", height, width,rows_8, rows_6, rows_5, rows_4, rows_3, rows_2);
     shuffle_kernel<<<gridDim, blockDim>>>(cuda_q_weight, height, width, rows_8, rows_6, rows_5, rows_4, rows_3, rows_2);
 }
 
@@ -170,6 +184,8 @@ __global__ void reconstruct_gptq_kernel
     const int rows_4
 )
 {
+    if(threadIdx.x != 0 || blockIdx.x != 0 || blockIdx.y != 0) return;
+
     MatrixView_half_rw b_(b, size_k, size_n);
     MatrixView_q4_row b_gptq_qzeros_(b_gptq_qzeros, groups, size_n);
     MatrixView_half b_gptq_scales_(b_gptq_scales, groups, size_n);
@@ -186,13 +202,15 @@ __global__ void reconstruct_gptq_kernel
 
     if (b_q_perm)
     {
-        if (offset_k + t < size_k)
+        if (offset_k + t < size_k) {
             perm[t] = b_q_perm[offset_k + t];
+	    printf("t %d offset %d perm[t] %d\n", t, offset_k, perm[t]);
+	}
     }
 
     // Column
 
-    int n = offset_n + t * 4;
+    int n = offset_n + t * 4; // each block process 4 cols
     if (n >= size_n) return;
 
     // Find initial group
@@ -200,9 +218,10 @@ __global__ void reconstruct_gptq_kernel
     int group = offset_k / groupsize;
     int nextgroup = offset_k + groupsize;
 
+    printf("group is %d, nextgroup %d\n", group, nextgroup);
     // b offset
 
-    int qk = offset_k / (32 / 4);
+    int qk = offset_k / (32 / 4); // row offset 
 
     const uint32_t* b_ptr = b_q_weight + qk * size_n + n;
 
@@ -215,8 +234,23 @@ __global__ void reconstruct_gptq_kernel
     b_gptq_qzeros_.item4(zeros, group, n);
     b_gptq_scales_.item4_h2(scales, group, n);
 
+    printf("value in zeros:\n");
+    for(int i = 0; i < 4; i++) printf("%d\t", zeros[i]);
+    printf("\n");
+    
+    printf("value in scales:\n");
+    for(int i = 0; i < 2; i++) printf("%f\t%f\t", __half2float(scales[i].x), __half2float(scales[i].y));
+    printf("\n");
+
     // Avoid zeros overflow with & 0x0f.
     dequant_4bit_8_prep_zero((zeros[0] + 1) & 0x0f, z1z16[0], y1y16[0]);
+    printf("value in z1z16:\n");
+    for(int i = 0; i < 2; i++) printf("%f\t%f\t", __half2float(z1z16[0][i].x), __half2float(z1z16[0][i].y));
+    printf("\n");
+    
+    printf("value in y1y16:\n");
+    for(int i = 0; i < 2; i++) printf("%f\t%f\t", __half2float(y1y16[0][i].x), __half2float(y1y16[0][i].y));
+    printf("\n");
     dequant_4bit_8_prep_zero((zeros[1] + 1) & 0x0f, z1z16[1], y1y16[1]);
     dequant_4bit_8_prep_zero((zeros[2] + 1) & 0x0f, z1z16[2], y1y16[2]);
     dequant_4bit_8_prep_zero((zeros[3] + 1) & 0x0f, z1z16[3], y1y16[3]);
@@ -482,6 +516,11 @@ void QMatrix::reconstruct(half* out)
     else
     {
         gridDim.x = DIVIDE(width, BLOCK_KN_SIZE * 4);
+	printf("before launch kernel grid %d %d %d, block %d %d %d\n", gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z);
+
+	printf("height %d, width %d, groupsize %d, groups %d, rows_4 %d\n", height, width, groupsize, groups, rows_4);
+
+	printf("cuda_q_weight %x, cuda_q_perm %x, cuda_gptq_qzeros %x, cuda_gptq_scales %x\n", cuda_q_weight, cuda_q_perm, cuda_gptq_qzeros, cuda_gptq_scales);
         reconstruct_gptq_kernel<<<gridDim, blockDim>>>
         (
             cuda_q_weight,
@@ -543,6 +582,9 @@ __global__ void make_sequential_kernel
 
 bool QMatrix::make_sequential(const uint32_t* cpu_g_idx)
 {
+    static int cnt = -1;
+    ++cnt;
+    //if(cnt == 1) exit(0);
     uint32_t* cuda_new_qweight = NULL;
     cudaError_t err = cudaMalloc(&cuda_new_qweight, height / 8 * width * sizeof(uint32_t));
     if (err != cudaSuccess) {
@@ -567,6 +609,13 @@ bool QMatrix::make_sequential(const uint32_t* cpu_g_idx)
         acc += tmp;
     }
 
+    /*
+    printf("groups is %d\n", groups);
+    printf("cpu_g_idx_map:\n");
+    for(int i = 0; i < groups; i++) {
+    	printf("i %d : %d\n", i, cpu_g_idx_map[i]);
+    }
+    */
     // X map (inverse)
 
     for (int row = 0; row < height; row++)
@@ -577,17 +626,43 @@ bool QMatrix::make_sequential(const uint32_t* cpu_g_idx)
         cpu_x_map_inv[row] = target_row;
     }
 
+    /*
+    printf("height is %d\n", height);
+    printf("cpu_x_map_inv:\n");
+    for(int i = 0 ; i< height; i++) {
+	    if(i < 34 || i > 4063)
+	    	printf("cpu_x_map_inv i %d: %d\n", i, cpu_x_map_inv[i]);
+    }
+    */
     // X map
 
     for (int row = 0; row < height; row++) cpu_x_map[cpu_x_map_inv[row]] = row;
-
+    /*
+    printf("cpu_x_map:\n");
+    for(int i = 0; i < height; i++) {
+	if(i < 34 || i > 4063)
+    	printf("i %d : %d\n", i, cpu_x_map[i]);
+    }
+*/
     // Reduce to uint16_t
 
     uint16_t* cpu_x_map16 = (uint16_t*)cpu_x_map;
     uint16_t* cpu_x_map_inv16 = (uint16_t*)cpu_x_map_inv;
-    for (int row = 0; row < height; row++) cpu_x_map16[row] = (uint16_t) cpu_x_map[row];
-    for (int row = 0; row < height; row++) cpu_x_map_inv16[row] = (uint16_t) cpu_x_map_inv[row];
 
+    /*
+    printf("cpu_x_map16:\n");
+    for (int row = 0; row < height; row++) {
+	    cpu_x_map16[row] = (uint16_t) cpu_x_map[row];
+	if(row < 34 || row > 4063)
+    		printf("row %d : %d\n", row, cpu_x_map16[row]);
+    }
+    printf("cpu_x_map_inv16:\n");
+    for (int row = 0; row < height; row++) {
+	cpu_x_map_inv16[row] = (uint16_t) cpu_x_map_inv[row];
+	if(row < 34 || row > 4063)
+    		printf("row %d : %d\n", row, cpu_x_map_inv16[row]);
+    }
+    */
     // Move to CUDA
 
     cudaMemcpyAsync(cuda_q_perm, cpu_x_map16, height * sizeof(uint16_t), cudaMemcpyHostToDevice);
@@ -601,6 +676,15 @@ bool QMatrix::make_sequential(const uint32_t* cpu_g_idx)
     gridDim.x = DIVIDE(width, THREADS_X);
     gridDim.y = height / 8;
 
+#if 0
+    uint32_t* host_q = (uint32_t*)calloc(512 * 4096, sizeof(uint32_t));
+    cudaMemcpy(host_q, cuda_q_weight, height / 8 * width * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    printf("cuda q weight:\n");
+    for(int i = 0; i < 512 * 4096; i++) {
+    	printf("%u\t", host_q[i]);
+	if((i+1) % 16 == 0) printf("\n");
+    }
+    /*
     make_sequential_kernel<<<gridDim, blockDim>>>
     (
         cuda_q_weight,
@@ -609,15 +693,24 @@ bool QMatrix::make_sequential(const uint32_t* cpu_g_idx)
         height / 8,
         width
     );
+    */
 
     // Replace qweights
 
-    cudaMemcpyAsync(cuda_q_weight, cuda_new_qweight, height / 8 * width * sizeof(uint32_t), cudaMemcpyDeviceToDevice);
+    //cudaMemcpyAsync(cuda_q_weight, cuda_new_qweight, height / 8 * width * sizeof(uint32_t), cudaMemcpyDeviceToDevice);
 
     // Cleanup
 
     cudaDeviceSynchronize();
 
+    cudaMemcpy(host_q, cuda_q_weight, height / 8 * width * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    printf("cuda q new weight:\n");
+    for(int i = 0; i < 512 * 4096; i++) {
+    	printf("%u\t", host_q[i]);
+	if((i+1) % 16 == 0) printf("\n");
+    }
+    free(host_q);
+#endif
     cudaFree(cuda_new_qweight);
     free(cpu_g_idx_map);
     free(cpu_x_map);

@@ -104,6 +104,11 @@ __global__ void make_sequential_kernel
 
 void Q4Matrix::make_sequential(const uint32_t* cpu_g_idx)
 {
+    printf("cpu_g_idx:\n");
+    for(int i = 0; i < 4096; i++) {
+    	if(i >= 33 || i < 4063)	continue;
+	printf("i %d: %d \n", cpu_g_idx[i]);
+    }
     uint32_t* cuda_new_qweight = NULL;
     cudaMalloc(&cuda_new_qweight, height / 8 * width * sizeof(uint32_t));
     cudaMalloc(&cuda_x_map, height * sizeof(uint32_t));  // TODO: Should probably be allocated in PyTorch
@@ -114,10 +119,14 @@ void Q4Matrix::make_sequential(const uint32_t* cpu_g_idx)
 
     // Group histogram
 
+    // how many elements are there in a group? 
+    // must be [32, 32, 32, ... 32], len = 128
     for (int i = 0; i < height; i++) cpu_g_idx_map[cpu_g_idx[i]]++;
 
     // Group map
 
+    // prefix sum of group , used as offset
+    // must be [0, 32, 64, 96 ... 4064], len = 128
     for (int i = 0, acc = 0; i < groups; i++)
     {
         short tmp = cpu_g_idx_map[i];
@@ -125,14 +134,26 @@ void Q4Matrix::make_sequential(const uint32_t* cpu_g_idx)
         acc += tmp;
     }
 
-    // X map (inverse)
+    printf("cpu_g_idx_map:\n");
+    for(int i = 0; i < groups; i++) {
+    	printf("i %d : %d\n", cpu_g_idx_map[i]);
+    }
 
+    // height is 4096
+
+    // X map (inverse)
+    printf("height is %d\n", height);
     for (int row = 0; row < height; row++)
     {
         uint32_t target_group = cpu_g_idx[row];
         uint32_t target_row = cpu_g_idx_map[target_group];
         cpu_g_idx_map[target_group]++;
         cpu_x_map_inv[row] = target_row;
+    }
+    printf("cpu_x_map_inv:\n");
+    for(int i = 0 ; i< height; i++) {
+	    if(i > 34 || i < 4063) continue;
+	    printf("i %d: %d\n", i, cpu_x_map_inv[i]);
     }
 
     // X map

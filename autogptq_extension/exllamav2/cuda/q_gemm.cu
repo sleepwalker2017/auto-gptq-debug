@@ -115,9 +115,10 @@ void gemm_half_q_half_cuda
     bool force_cuda
 )
 {
+    printf("in gemm_half_q_half_cuda:\n size_m n k %d %d %d MAX_Q_GEMM_ROWS %d\n", size_m, size_n, size_k, MAX_Q_GEMM_ROWS);
     if (size_m > MAX_Q_GEMM_ROWS && !force_cuda)
     {
-        //printf("cublas\n");
+        printf("cublas\n");
 
         // Reconstruct FP16 matrix, then cuBLAS
 
@@ -178,6 +179,7 @@ void gemm_half_q_half_cuda
             gemm_half_q_half_cuda_part(a + last_chunk * size_k, b, c + last_chunk * size_n, last_chunk_size, size_n, size_k, last_chunk_size, clear);
         }
     }
+    exit(0);
 }
 
 __global__ void clear_kernel

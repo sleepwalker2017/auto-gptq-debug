@@ -203,6 +203,7 @@ class QuantLinear(nn.Module):
         self.qzeros = torch.from_numpy(qzeros)
 
     def forward(self, x: torch.Tensor):
+        import pdb; pdb.set_trace()
         out_shape = x.shape[:-1] + (self.outfeatures,)
         x = x.reshape(-1, x.shape[-1])
         x_dtype = x.dtype

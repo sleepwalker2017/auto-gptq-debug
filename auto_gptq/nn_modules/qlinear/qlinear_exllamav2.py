@@ -70,7 +70,7 @@ def ext_make_q_matrix(w: dict, temp_dq, key: str = None):
 
         # GPTQ with g_idx (act_order)
         if "g_idx" in w and not (w["g_idx"] == 0).all().item():
-            w["q_perm"] = torch.empty(
+            w["q_perm"] = torch.empty( 
                 (w["qweight"].shape[0] * 8,),
                 dtype=torch.short,
                 device=w["qweight"].device,
@@ -169,6 +169,7 @@ class QuantLinear(nn.Module):
             self.bias = None
 
     def post_init(self, temp_dq):
+        #import pdb; pdb.set_trace()
         assert self.qweight.device.type == "cuda"
         assert self.qweight.device.index is not None
         self.q_tensors = {
@@ -181,6 +182,7 @@ class QuantLinear(nn.Module):
         self.q_handle = ext_make_q_matrix(self.q_tensors, temp_dq)
 
     def forward(self, x, force_cuda=False):
+        #import pdb; pdb.set_trace()
         if x.dtype != torch.float16:
             logger.warning_once(
                 f"The exllama v2 kernel for GPTQ requires a float16 input activation, while {x.dtype} was passed. Casting to float16.\nMake sure you loaded your model with torch_dtype=torch.float16, that the model definition does not inadvertently cast to float32, or disable AMP Autocast that may produce float32 intermediate activations in the model."
